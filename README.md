@@ -271,6 +271,15 @@ Strict local mode (no web search):
 ./rag ask --strict-local "Summarize the internal design memo"
 ```
 
+
+With User's document/Audio:
+```bash
+./rag ask "how Alice met mad hat?" --file ./data/corpus/alice_in_wonderland.txt
+
+./rag ask "what does this audio say?" --file ./data/audio/puss-boots-verse-16.mp3
+```
+
+
 Fast mode (skip web search):
 ```bash
 ./rag ask --fast "Give me a quick answer"
