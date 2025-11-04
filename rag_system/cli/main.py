@@ -1,11 +1,21 @@
 """Main CLI interface for RAG system"""
 
+import warnings
+import logging
 import click
 import json
 from pathlib import Path
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rag_system.core.config import get_config
 from rag_system.workflows.ingest_workflow import get_ingest_workflow
 from rag_system.workflows.rag_workflow import get_rag_workflow
+
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*resume_download.*", module="huggingface_hub.file_download")
+warnings.filterwarnings("ignore", module="yfinance")
+logging.getLogger("yfinance").setLevel(logging.ERROR)
+
+console = Console()
 
 @click.group()
 def cli():
@@ -41,11 +51,37 @@ def ingest(path):
 @click.option('--strict-local', is_flag=True, help='Use only local knowledge base')
 @click.option('--fast', is_flag=True, help='Fast mode (skip web search)')
 @click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
-def ask(query, strict_local, fast, output_json):
+@click.option('--no-progress', is_flag=True, help='Disable progress bar')
+@click.option('--file', 'files', multiple=True, type=click.Path(exists=True), help='Attach files to query (can be used multiple times)')
+def ask(query, strict_local, fast, output_json, no_progress, files):
     """Ask a question and get an answer from the RAG system"""
     try:
         workflow = get_rag_workflow()
-        result = workflow.execute(query, strict_local=strict_local, fast_mode=fast)
+        
+        file_list = list(files) if files else None
+        
+        if output_json or no_progress:
+            result = workflow.execute(query, strict_local=strict_local, fast_mode=fast, files=file_list)
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("Processing query...", total=None)
+                
+                def update_progress(stage: str):
+                    progress.update(task, description=f"[cyan]{stage}[/cyan]")
+                
+                result = workflow.execute(
+                    query, 
+                    strict_local=strict_local, 
+                    fast_mode=fast,
+                    files=file_list,
+                    progress_callback=update_progress
+                )
         
         if output_json:
             click.echo(json.dumps(result, indent=2))

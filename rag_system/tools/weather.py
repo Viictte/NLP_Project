@@ -41,7 +41,8 @@ class WeatherTool:
             params = {
                 'q': location,
                 'format': 'json',
-                'limit': 1
+                'limit': 5,
+                'addressdetails': 1
             }
             headers = {'User-Agent': 'RAG-System/1.0'}
             
@@ -49,9 +50,27 @@ class WeatherTool:
             response.raise_for_status()
             
             results = response.json()
-            if results:
-                return (float(results[0]['lat']), float(results[0]['lon']))
-            return None
+            if not results:
+                return None
+            
+            location_lower = location.lower()
+            for result in results:
+                address = result.get('address', {})
+                display_name = result.get('display_name', '').lower()
+                
+                if 'taipei' in location_lower:
+                    if 'taiwan' in display_name or address.get('country_code') == 'tw':
+                        return (float(result['lat']), float(result['lon']))
+                
+                if any(keyword in location_lower for keyword in ['tokyo', '東京']):
+                    if 'japan' in display_name or address.get('country_code') == 'jp':
+                        return (float(result['lat']), float(result['lon']))
+                
+                if any(keyword in location_lower for keyword in ['beijing', '北京']):
+                    if 'china' in display_name or address.get('country_code') == 'cn':
+                        return (float(result['lat']), float(result['lon']))
+            
+            return (float(results[0]['lat']), float(results[0]['lon']))
         except Exception:
             return None
     
