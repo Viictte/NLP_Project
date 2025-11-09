@@ -100,7 +100,7 @@ sudo apt-get install -y python3 python3-pip python3-venv ffmpeg tesseract-ocr
 
 **Option 1: Using setup script (recommended)**
 ```bash
-git clone https://github.com/Viictte/RAG_LLM.git
+git clone https://github.com/Viictte/NLP_Project.git
 cd RAG_LLM
 chmod +x rag setup.sh  # Make scripts executable
 ./setup.sh
@@ -126,7 +126,7 @@ nano .env  # or use your preferred editor
 
 **Option 2: Using Makefile**
 ```bash
-git clone https://github.com/Viictte/RAG_LLM.git
+git clone https://github.com/Viictte/NLP_Project.git
 cd RAG_LLM
 make setup          # Create venv and install dependencies
 make up             # Start Docker services
@@ -140,7 +140,7 @@ make status         # Verify system
 
 **1. Clone the repository:**
 ```bash
-git clone https://github.com/Viictte/RAG_LLM.git
+git clone https://github.com/Viictte/NLP_Project.git
 cd RAG_LLM
 ```
 
