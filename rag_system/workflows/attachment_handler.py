@@ -289,23 +289,51 @@ class DocumentAttachmentHandler:
             return f"Error parsing HTML: {str(e)}", {'error': str(e)}
     
     def _parse_image(self, path: Path) -> tuple[str, Dict[str, Any]]:
-        """Parse image using OCR (if available)"""
+        """Parse image using vision API"""
         try:
-            import pytesseract
             from PIL import Image
+            from rag_system.tools.vision import get_vision_tool
             
             image = Image.open(path)
-            text = pytesseract.image_to_string(image)
-            text = self._normalize_whitespace(text)
+            width, height = image.size
+            format_name = image.format
             
-            if not text.strip():
-                return f"[Image: {path.name}] (No text detected via OCR)", {'type': 'image', 'ocr': 'no_text'}
+            metadata = {
+                'type': 'image',
+                'width': width,
+                'height': height,
+                'format': format_name,
+                'path': str(path)
+            }
             
-            metadata = {'type': 'image', 'ocr': 'success'}
+            # Try to get vision description
+            vision_tool = get_vision_tool()
+            vision_description = None
             
-            return f"[Image: {path.name}] (OCR extracted text):\n{text}", metadata
-        except ImportError:
-            return f"[Image: {path.name}] (OCR not available - tesseract not installed)", {'type': 'image', 'ocr': 'unavailable'}
+            if vision_tool.enabled and vision_tool.api_key:
+                try:
+                    # Read image bytes
+                    with open(path, 'rb') as f:
+                        image_bytes = f.read()
+                    
+                    # Get vision description
+                    vision_description = vision_tool.describe_image(image_bytes)
+                except Exception as e:
+                    # Graceful degradation - continue with metadata only
+                    pass
+            
+            # Build content string
+            content = f"[Image: {path.name}]\n"
+            content += f"Format: {format_name}\n"
+            content += f"Dimensions: {width}x{height}\n"
+            
+            if vision_description:
+                content += f"\nVision Analysis:\n{vision_description}\n"
+                metadata['vision_description'] = vision_description
+            else:
+                content += f"\nNote: This is an image file. Vision analysis is not available."
+            
+            return content, metadata
         except Exception as e:
             return f"[Image: {path.name}] Error: {str(e)}", {'type': 'image', 'error': str(e)}
     

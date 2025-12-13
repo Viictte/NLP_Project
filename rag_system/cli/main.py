@@ -4,6 +4,8 @@ import warnings
 import logging
 import click
 import json
+import os
+import traceback
 from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -97,6 +99,8 @@ def ask(query, strict_local, fast, output_json, no_progress, files):
                 for citation in result['citations']:
                     click.echo(f"  {citation}")
     except Exception as e:
+        if os.getenv("RAG_DEBUG") == "1":
+            traceback.print_exc()
         click.echo(f"✗ Error: {str(e)}", err=True)
 
 @cli.group()
@@ -183,6 +187,26 @@ def status():
             click.echo(f"✓ Embeddings: Loaded (dimension: {embeddings.dimension})")
         except Exception as e:
             click.echo(f"✗ Embeddings: {str(e)}")
+        
+        # Test vision API and select working Gemini model
+        try:
+            from rag_system.tools.vision import get_vision_tool
+            vision_tool = get_vision_tool()
+            
+            if not vision_tool.enabled:
+                click.echo("✗ Vision: Disabled in config")
+            elif not vision_tool.api_key:
+                click.echo("✗ Vision: API key not configured")
+            else:
+                # Test models and select working one
+                model = vision_tool.select_working_model(force=False)
+                if model:
+                    click.echo(f"✓ Vision: Connected (model: {model})")
+                else:
+                    error_msg = vision_tool._last_error or "All candidate models failed"
+                    click.echo(f"✗ Vision: {error_msg}")
+        except Exception as e:
+            click.echo(f"✗ Vision: {str(e)}")
         
     except Exception as e:
         click.echo(f"✗ Error: {str(e)}", err=True)

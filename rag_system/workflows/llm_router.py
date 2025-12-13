@@ -23,6 +23,96 @@ class LLMRouter:
         self.temperature = self.config.get('llm.temperature', 0.7)
         self.max_tokens = self.config.get('llm.max_tokens', 2000)
     
+    def analyze_query(self, query: str) -> Dict[str, Any]:
+        """Analyze query to extract domain, location, entities, and generate expansions"""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "analyze_query",
+                    "description": "Analyze the query to extract structured information",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "domain": {
+                                "type": "string",
+                                "enum": ["weather", "finance", "transport", "hk_local", "cuisine", "history", "general"],
+                                "description": "Primary domain of the query"
+                            },
+                            "location": {
+                                "type": "string",
+                                "description": "Geographic location mentioned (normalized, e.g., 'Hong Kong', 'Beijing', 'New York'). Empty if no location."
+                            },
+                            "entities": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Key entities mentioned (companies, places, people, etc.)"
+                            },
+                            "query_expansions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "2-3 semantically expanded versions of the query for better recall"
+                            },
+                            "language": {
+                                "type": "string",
+                                "enum": ["en", "zh", "mixed"],
+                                "description": "Primary language of the query"
+                            }
+                        },
+                        "required": ["domain", "location", "entities", "query_expansions", "language"]
+                    }
+                }
+            }
+        ]
+        
+        system_prompt = """You are a query analysis expert that extracts structured information from user queries.
+
+Your task is to analyze the query and extract:
+1. **Domain**: Primary topic area (weather, finance, transport, hk_local, cuisine, history, general)
+2. **Location**: Geographic location if mentioned (normalize to standard names like "Hong Kong", "Beijing", "New York")
+3. **Entities**: Key entities (companies, places, people, organizations)
+4. **Query Expansions**: 2-3 semantically similar versions of the query for better search recall
+5. **Language**: Primary language (en=English, zh=Chinese, mixed=both)
+
+Examples:
+- "What's the weather forecast for Hong Kong this afternoon?" → domain=weather, location="Hong Kong", entities=["Hong Kong"], expansions=["Hong Kong weather forecast today afternoon", "Hong Kong weather this afternoon", "weather forecast Hong Kong today"]
+- "香港圖書館證怎麼辦理？" → domain=hk_local, location="Hong Kong", entities=["Hong Kong Public Library", "library card"], expansions=["Hong Kong library card application", "HKPL borrower registration", "how to apply Hong Kong library card"]
+- "What is the temperature in Beijing right now?" → domain=weather, location="Beijing", entities=["Beijing"], expansions=["Beijing current temperature", "Beijing weather now", "temperature Beijing today"]
+
+Be precise with location extraction and normalization."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query}
+                ],
+                tools=tools,
+                tool_choice={"type": "function", "function": {"name": "analyze_query"}},
+                temperature=0.3
+            )
+            
+            tool_call = response.choices[0].message.tool_calls[0]
+            arguments = json.loads(tool_call.function.arguments)
+            
+            return {
+                'domain': arguments.get('domain', 'general'),
+                'location': arguments.get('location', ''),
+                'entities': arguments.get('entities', []),
+                'query_expansions': arguments.get('query_expansions', [query]),
+                'language': arguments.get('language', 'en')
+            }
+        except Exception as e:
+            return {
+                'domain': 'general',
+                'location': '',
+                'entities': [],
+                'query_expansions': [query],
+                'language': 'en',
+                'error': str(e)
+            }
+    
     def route_query(self, query: str) -> Dict[str, Any]:
         tools = [
             {
@@ -56,20 +146,25 @@ class LLMRouter:
 
 Available sources:
 - local_knowledge_base: Internal documents and knowledge base
-- web_search: Real-time web search for current information
-- finance: Stock prices, market data, company financials
-- weather: Weather forecasts and historical weather data
-- transport: Routes, directions, travel times
+- web_search: Real-time web search for current information, news, articles, blogs
+- finance: Stock prices, market data, company financials (real-time API data)
+- weather: Weather forecasts and historical weather data (real-time API data)
+- transport: Routes, directions, travel times (real-time API data)
 - multimodal_ingest: Process uploaded files (PDFs, images, documents)
 
 Selection guidelines:
-- Contains stock ticker or financial terms? → finance
-- Contains "weather", city name, or date with weather context? → weather
-- Contains route, address, or travel query? → transport
+- Stock prices/market data/company financials? → finance (do NOT add web_search unless user asks for "news" or "articles")
+- Weather conditions/forecasts? → weather (do NOT add web_search unless user asks for weather "news" or unusual events)
+- Routes/directions/travel times? → transport (do NOT add web_search)
 - File attached or document processing needed? → multimodal_ingest
-- Needs current/recent information? → web_search + local_knowledge_base
-- General knowledge query? → local_knowledge_base
-- Can select multiple sources if needed
+- Latest news/articles/blogs/current events? → web_search (optionally + local_knowledge_base if relevant)
+- General knowledge/definitions/facts? → local_knowledge_base only
+- Can select multiple sources if needed, but prefer specialized tools over web_search when available
+
+Key principle: Use specialized tools (finance, weather, transport) for their domains. Only add web_search when:
+1. User explicitly asks for news/articles/blogs/analysis, OR
+2. Query is about general current events not covered by specialized tools, OR
+3. No specialized tool matches the query
 
 Select the most appropriate sources for the query."""
 
@@ -141,6 +236,7 @@ Provide your answer now:"""
 
 Guidelines:
 - Use the provided document context as your primary source of information
+- When you see a "Vision Analysis:" section for images, treat it as if you saw the image yourself - use that analysis directly
 - If the context doesn't fully answer the question, supplement with your knowledge
 - Be comprehensive and accurate
 - For data analysis: provide specific numbers, trends, and insights
@@ -174,41 +270,96 @@ Provide your answer now:"""
         except Exception as e:
             return f"Error generating answer: {str(e)}"
     
-    def synthesize_answer(self, query: str, context: List[Dict[str, Any]], citations: List[str], allow_direct_knowledge: bool = False) -> str:
-        if not context:
+    def synthesize_answer(self, query: str, context: str, language: str = 'en', query_type: str = 'general', allow_direct_knowledge: bool = False, strict_grounding: bool = True) -> str:
+        if not context or not context.strip():
             if allow_direct_knowledge:
-                return self.answer_direct(query)
-            return "I couldn't find relevant information to answer your query. Please try rephrasing your question or check if the required data sources are available."
+                return self.answer_direct(query, language=language)
+            # Provide more helpful message instead of generic "no information"
+            if language == 'zh':
+                return "抱歉，我無法從可用的數據源中獲取這個問題的答案。請嘗試換個方式提問或檢查相關官方網站。"
+            else:
+                return "I couldn't retrieve information about this from available sources. Please try rephrasing your question or check official sources directly."
         
-        context_text = "\n\n".join([
-            f"[{i+1}] {doc.get('text', '')}\nSource: {doc.get('source', 'Unknown')}"
-            for i, doc in enumerate(context)
-        ])
+        # Check cache first
+        from rag_system.services.redis_service import get_redis_service
+        redis = get_redis_service()
+        context_hash = str(hash(context))
+        cached_answer = redis.get_answer_cache(query, context_hash)
+        if cached_answer:
+            return cached_answer
         
-        system_prompt = """You are a highly capable AI assistant powered by DeepSeek that provides accurate, well-cited answers by intelligently synthesizing information from multiple sources.
+        context_text = context
+        
+        # Use strict grounding for factual/time-sensitive queries
+        if strict_grounding:
+            system_prompt = """You are a confident, accurate retrieval-augmented assistant that provides clear answers based on provided context.
+
+Core Rules:
+- Base your answer on the provided CONTEXT and TOOL RESULTS
+- Do NOT invent numbers, dates, times, temperatures, prices, or any factual data not in the context
+- Use the context snippets and tool outputs as your primary source
+- If multiple snippets disagree, state the range or most credible source
+- Cite sources using [1], [2], etc. for factual claims
+- Respond in the same language as the query
+
+Answer Style:
+- Be CONFIDENT and DIRECT when context clearly supports the answer
+- Use decisive language: "The answer is...", "According to [source]...", "The data shows..."
+- Avoid hedging phrases like "it appears", "it seems", "I might not be certain" when evidence is clear
+- Only mention limitations when information is genuinely missing or contradictory
+
+Partial Answers:
+- If context supports SOME but NOT ALL requested details:
+  (a) Confidently answer the parts clearly supported by context
+  (b) Briefly note which specific parts are not available (one sentence, no apologies)
+- If NO parts are supported: State that the information is not available in the provided context and suggest checking official sources
+
+Examples of GOOD confident answers:
+- "The 43rd Hong Kong Film Awards Best Actor winner is 劉青雲 for the film 《爸爸》[1][2]."
+- "Tomorrow's weather in Central will be 28°C with partly cloudy skies[1]. This is ideal for outdoor activities."
+- "The stock price of AAPL is $182.45, up 2.3% from yesterday[1]."
+
+Examples of BAD overly cautious answers:
+- "Based on the available data, it appears the winner might be 劉青雲, though I cannot confirm with complete certainty..."
+- "The weather seems to suggest it could be around 28°C, but this may not be entirely accurate..."
+"""
+
+            user_prompt = f"""QUESTION:
+{query}
+
+CONTEXT (snippets and tool outputs):
+{context_text}
+
+TASK:
+Provide a CONFIDENT, CLEAR answer using the context above.
+- If context fully supports the answer: state it directly and decisively with citations
+- If context partially supports: answer what's available confidently, then briefly note what's missing
+- If context doesn't support: State that the information is not available and suggest checking official sources
+
+Be confident when evidence is clear. Avoid unnecessary hedging.
+
+Your answer:"""
+        else:
+            # Permissive mode for general knowledge questions
+            system_prompt = """You are a highly capable AI assistant powered by DeepSeek that provides accurate, well-cited answers by intelligently synthesizing information from multiple sources.
 
 Core Capabilities:
 - Extract and synthesize information from diverse sources (APIs, web search, knowledge bases)
 - Cross-reference data across sources to provide comprehensive answers
 - Identify and reconcile conflicting information by prioritizing recency and credibility
-- Fill gaps in structured data by extracting from unstructured web content
 - Use your extensive knowledge to answer questions when context is limited
 
 Guidelines:
-- NEVER say "the context does not contain", "I cannot answer", or similar negative statements
-- ALWAYS provide the best answer using: (1) context provided, (2) your knowledge, (3) logical reasoning
 - For general knowledge questions (math, science, history, geography): use your knowledge directly
 - For real-time data (weather, stock prices, news): prioritize context from APIs and web search
 - Synthesize information from ALL sources (finance APIs, web search results, knowledge base, your knowledge)
-- For finance queries: extract prices, changes, percentages, timestamps from ANY available source; prioritize pre-market/post-market data when available
-- For incomplete API data: supplement with information from web search results
 - Cite sources using [1], [2], etc. when facts come from context; no citation needed for general knowledge
 - When multiple sources provide data, cross-check and use the most recent/credible
 - Be comprehensive and actionable - provide specific numbers, dates, and facts
 - Use clear, professional language with specific details
 - IMPORTANT: Match the language of the query - respond in English for English queries, Traditional Chinese for Chinese queries"""
 
-        user_prompt = f"""Query: {query}
+            user_prompt = f"""Query: {query}
 
 Context:
 {context_text}
@@ -217,10 +368,8 @@ Task: Provide a comprehensive, well-cited answer by:
 1. IMPORTANT: Respond in the SAME LANGUAGE as the query (English query → English answer, Chinese query → Traditional Chinese answer)
 2. If this is a general knowledge question (math, science, history, geography, language): use your knowledge to answer directly and accurately
 3. If this is a real-time data question (weather, stock prices, news): extract ALL relevant information from the context (API data, web snippets)
-4. For finance queries: identify prices, changes, percentages, timestamps, market state (pre/post/regular market); prioritize the most recent data
-5. Cross-reference multiple sources and prioritize the most recent timestamp
-6. Provide specific numbers, dates, and facts with citations [1], [2] for context sources
-7. If context is empty or irrelevant but you know the answer: provide it using your knowledge
+4. Cross-reference multiple sources and prioritize the most recent timestamp
+5. Provide specific numbers, dates, and facts with citations [1], [2] for context sources
 
 Provide your answer now:"""
 
@@ -235,7 +384,12 @@ Provide your answer now:"""
                 max_tokens=self.max_tokens
             )
             
-            return response.choices[0].message.content
+            answer = response.choices[0].message.content
+            
+            # Cache the answer
+            redis.set_answer_cache(query, context_hash, answer)
+            
+            return answer
         except Exception as e:
             return f"Error generating answer: {str(e)}"
 

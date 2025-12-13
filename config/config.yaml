@@ -16,10 +16,10 @@ reranker:
   top_k: 24
 
 retrieval:
-  dense_top_k: 50
-  bm25_top_k: 50
+  dense_top_k: 20
+  bm25_top_k: 20
   rrf_k: 60
-  final_top_k: 50
+  final_top_k: 20
 
 scoring:
   cross_encoder_weight: 0.55
@@ -57,26 +57,47 @@ redis:
 credibility_priors:
   default: 0.5
   domains:
+    # Official Hong Kong government and public services
+    gov.hk: 0.99
+    hko.gov.hk: 0.99
+    hkpl.gov.hk: 0.99
+    td.gov.hk: 0.99
+    info.gov.hk: 0.99
+    # Technical documentation
     docs.python.org: 0.95
     github.com: 0.85
     stackoverflow.com: 0.80
     wikipedia.org: 0.75
-    medium.com: 0.60
-    reddit.com: 0.50
+    # News and media
+    scmp.com: 0.70
+    reuters.com: 0.85
+    bloomberg.com: 0.85
+    # Blogs and forums (lower priority)
+    medium.com: 0.40
+    reddit.com: 0.20
+    facebook.com: 0.20
+    youtube.com: 0.30
+    quora.com: 0.30
 
 tools:
   weather:
     enabled: true
-    provider: open-meteo
+    provider: weatherapi
   finance:
     enabled: true
-    provider: yfinance
+    provider: alpha_vantage
   transport:
     enabled: true
-    provider: openrouteservice
+    provider: here
   web_search:
     enabled: true
     provider: tavily
+  vision:
+    enabled: true
+    api_url: https://yinli.one/v1/chat/completions
+    model: gemini-2.5-flash-lite
+    max_tokens: 500
+    timeout: 30
 
 performance:
   fast_mode: false
